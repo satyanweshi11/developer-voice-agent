@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Developer Voice Agent | Phase 1</title>
+    <style>
+        body {
+            font-family: system-ui, sans-serif;
+            max-width: 720px;
+            margin: 40px auto;
+            padding: 0 16px;
+            background: #101827;
+            color: #f1f5f9;
+        }
+
+        #status {
+            color: #fbbf24;
+            margin-bottom: 16px;
+        }
+
+        #messages {
+            height: 400px;
+            overflow-y: auto;
+            border: 1px solid #334155;
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 16px;
+        }
+
+        .message {
+            padding: 10px 12px;
+            margin: 10px 0;
+            background: #1e293b;
+            border-radius: 8px;
+            overflow-wrap: anywhere;
+        }
+
+        .system {
+            color: #94a3b8;
+            font-size: 13px;
+        }
+
+        form {
+            display: flex;
+            gap: 8px;
+        }
+
+        input {
+            flex: 1;
+            min-width: 0;
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid #475569;
+        }
+
+        button {
+            padding: 12px 18px;
+            cursor: pointer;
+            border-radius: 8px;
+            border: 0;
+        }
+
+        button:disabled {
+            cursor: not-allowed;
+            opacity: 0.5;
+        }
+    </style>
+</head>
+<body>
+    <h1>Developer Voice Agent</h1>
+    <p>Phase 1: Real-time WebSocket chat</p>
+
+    <div id="status">Connecting...</div>
+    <div id="messages"></div>
+
+    <form id="chat-form">
+        <input id="message-input"
+               placeholder="Type a message..."
+               autocomplete="off"
+               required>
+        <button id="send-button" type="submit" disabled>
+            Send
+        </button>
+    </form>
+
+    <script>
+        const RATE_LIMIT_MESSAGES = 10;
+        const RATE_LIMIT_WINDOW_MS = 5000;
+
+        const status = document.getElementById("status");
+        const messages = document.getElementById("messages");
+        const input = document.getElementById("message-input");
+        const form = document.getElementById("chat-form");
+        const sendButton = document.getElementById("send-button");
+
+        let socket;
+        let cooldownTimer = null;
+        const sendTimes = [];
+
+        function addMessage(text, isSystem = false) {
+            const element = document.createElement("div");
+            element.className = isSystem ? "system" : "message";
+            element.textContent = text;
+            messages.appendChild(element);
+            messages.scrollTop = messages.scrollHeight;
+        }
+
+        function pruneSendTimes() {
+            const cutoff = Date.now() - RATE_LIMIT_WINDOW_MS;
+            while (sendTimes.length && sendTimes[0] <= cutoff) {
+                sendTimes.shift();
+            }
+        }
+
+        function isConnected() {
+            return socket && socket.readyState === WebSocket.OPEN;
+        }
+
+        function refreshSendState() {
+            pruneSendTimes();
+
+            if (!isConnected()) {
+                sendButton.disabled = true;
+                return;
+            }
+
+            if (sendTimes.length >= RATE_LIMIT_MESSAGES) {
+                sendButton.disabled = true;
+                status.textContent = "Slow down — rate limit reached";
+
+                const waitMs = RATE_LIMIT_WINDOW_MS - (Date.now() - sendTimes[0]);
+                clearTimeout(cooldownTimer);
+                cooldownTimer = setTimeout(refreshSendState, Math.max(waitMs, 100));
+                return;
+            }
+
+            sendButton.disabled = false;
+            if (status.textContent.startsWith("Slow down")) {
+                status.textContent = "Connected";
+            }
+        }
+
+        function connect() {
+            const protocol =
+                location.protocol === "https:" ? "wss:" : "ws:";
+
+            const url = `${protocol}//${location.host}/ws`;
+            socket = new WebSocket(url);
+
+            socket.onopen = () => {
+                status.textContent = "Connected";
+                refreshSendState();
+            };
+
+            socket.onmessage = (event) => {
+                const message = JSON.parse(event.data);
+
+                if (message.type === "system") {
+                    addMessage(
+                        `System: Connected. Client ID: ${message.client_id}`,
+                        true
+                    );
+                    return;
+                }
+
+                if (message.type === "chat") {
+                    addMessage(
+                        `${message.sender_id.slice(0, 8)}: ${message.content}`
+                    );
+                    return;
+                }
+
+                if (message.type === "error") {
+                    addMessage(`Error: ${message.message}`, true);
+                }
+            };
+
+            socket.onclose = () => {
+                status.textContent = "Disconnected";
+                sendButton.disabled = true;
+                addMessage("Connection closed.", true);
+            };
+
+            socket.onerror = () => {
+                status.textContent = "Connection error";
+            };
+        }
+
+        form.addEventListener("submit", (event) => {
+            event.preventDefault();
+
+            const content = input.value.trim();
+
+            if (!content || !isConnected()) {
+                return;
+            }
+
+            pruneSendTimes();
+
+            if (sendTimes.length >= RATE_LIMIT_MESSAGES) {
+                refreshSendState();
+                return;
+            }
+
+            socket.send(JSON.stringify({
+                type: "chat",
+                content: content
+            }));
+
+            sendTimes.push(Date.now());
+            input.value = "";
+            input.focus();
+            refreshSendState();
+        });
+
+        connect();
+    </script>
+</body>
+</html>
